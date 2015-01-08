@@ -13,6 +13,10 @@ import (
         "strings"
 )
 
+var (
+        printAST = flag.Bool("ast", false, "print ast")
+)
+
 type Printer struct {
         bytes.Buffer
         indent int
@@ -48,6 +52,22 @@ func (p *Printer) Unindent() {
         }
 }
 
+func expr(n ast.Expr) string {
+        p := new(Printer)
+        VisitExpr(p, n)
+        return p.String()
+}
+
+func field(n *ast.Field) string {
+        p := new(Printer)
+        if t, ok := n.Type.(*ast.StarExpr); ok {
+                p.P("%s* %s", expr(t.X), n.Names[0].Name)
+        } else {
+                p.P("%s %s", expr(n.Type), n.Names[0].Name)
+        }
+        return p.String()
+}
+
 func VisitBinExpr(p *Printer, n *ast.BinaryExpr) {
         VisitExpr(p, n.X)
         p.P(n.Op.String())
@@ -67,56 +87,74 @@ func VisitExpr(p *Printer, n ast.Expr) {
                 p.P("(")
                 VisitBinExpr(p, t)
                 p.P(")")
+        case *ast.UnaryExpr:
+                p.P(t.Op.String())
+                VisitExpr(p, t.X)
+        case *ast.StarExpr:
+                p.P("*")
+                VisitExpr(p, t.X)
+        case *ast.IndexExpr:
+                VisitExpr(p, t.X)
+                p.P("[")
+                VisitExpr(p, t.Index)
+                p.P("]")
         case *ast.CallExpr:
                 VisitExpr(p, t.Fun)
                 params := make([]string, 0)
                 for _, arg := range t.Args {
-                        sp := new(Printer)
-                        VisitExpr(sp, arg)
-                        params = append(params, string(sp.Bytes()))
+                        params = append(params, expr(arg))
                 }
                 p.P("(%s)", strings.Join(params, ", "))
         }
 }
 
+func VisitStmt(p *Printer, n ast.Stmt) {
+        switch t := n.(type) {
+        case *ast.ExprStmt:
+                p.Pln("%s;", expr(t.X))
+        case *ast.AssignStmt:
+                p.Pln("%s %s %s;", expr(t.Lhs[0]), t.Tok.String(), expr(t.Rhs[0]))
+        case *ast.DeclStmt:
+                VisitDecl(p, t.Decl)
+        case *ast.ReturnStmt:
+                p.Pln("return %s;", expr(t.Results[0]))
+        case *ast.IncDecStmt:
+                VisitExpr(p, t.X)
+                p.Pln("%s;", t.Tok.String())
+        case *ast.IfStmt:
+                p.Pi("if (")
+                VisitExpr(p, t.Cond)
+                p.P(") ")
+                VisitBlockStmt(p, t.Body)
+                if t.Else != nil {
+                        switch tt := t.Else.(type) {
+                        case *ast.IfStmt:
+                                p.Pi("else if(%s) ", expr(tt.Cond))
+                                VisitBlockStmt(p, tt.Body)
+                        case *ast.BlockStmt:
+                                p.Pln("else")
+                                VisitBlockStmt(p, tt)
+                        }
+                }
+        case *ast.ForStmt:
+                pp := new(Printer)
+                VisitStmt(pp, t.Init)
+                init := strings.TrimRight(pp.String(), "\n")
+                pp.Reset()
+
+                VisitStmt(pp, t.Post)
+                post := strings.TrimRight(pp.String(), ";\n")
+
+                p.Pi("for (%s %s; %s) ", init, expr(t.Cond), post)
+                VisitBlockStmt(p, t.Body)
+        }
+}
+
 func VisitBlockStmt(p *Printer, n *ast.BlockStmt) {
-        p.Pln("{")
+        p.P("{\n")
         p.Indent()
         for _, elem := range n.List {
-                sem := ";"
-                sp := new(Printer)
-                switch t := elem.(type) {
-                case *ast.ExprStmt:
-                        VisitExpr(sp, t.X)
-                case *ast.AssignStmt:
-                        VisitExpr(sp, t.Lhs[0])
-                        sp.P(" %s ", t.Tok.String())
-                        VisitExpr(sp, t.Rhs[0])
-                case *ast.DeclStmt:
-                        VisitDecl(sp, t.Decl)
-                case *ast.ReturnStmt:
-                        sp.P("return ")
-                        VisitExpr(sp, t.Results[0])
-                case *ast.IfStmt:
-                        sem = ""
-                        p.Pi("if (")
-                        VisitExpr(p, t.Cond)
-                        p.P(")\n")
-                        VisitBlockStmt(p, t.Body)
-                        if t.Else != nil {
-                                p.Pln("else")
-                                VisitBlockStmt(p, t.Else.(*ast.BlockStmt))
-                        }
-                case *ast.ForStmt:
-                        sem = ""
-                        p.Pi("while (")
-                        VisitExpr(p, t.Cond)
-                        p.P(")\n")
-                        VisitBlockStmt(p, t.Body)
-                }
-                if sp.Len() > 0 {
-                        p.Pln("%s%s", sp.Bytes(), sem)
-                }
+                VisitStmt(p, elem)
         }
         p.Unindent()
         p.Pln("}")
@@ -130,14 +168,14 @@ func VisitFunction(p *Printer, n *ast.FuncDecl) {
         funcname := n.Name.Name
         rettyp := "void"
         if fun.Results.NumFields() > 0 {
-                rettyp = fun.Results.List[0].Type.(*ast.Ident).Name
+                rettyp = expr(fun.Results.List[0].Type)
         }
 
         params := ""
         if fun.Params.NumFields() != 0 {
                 paraml := make([]string, 0)
                 for _, f := range fun.Params.List {
-                        param := f.Type.(*ast.Ident).Name + " " + f.Names[0].Name
+                        param := field(f)
                         paraml = append(paraml, param)
                 }
                 params = strings.Join(paraml, ", ")
@@ -150,12 +188,30 @@ func VisitFunction(p *Printer, n *ast.FuncDecl) {
 func VisitSpec(p *Printer, n ast.Spec) {
         switch d := n.(type) {
         case *ast.ValueSpec:
-                VisitExpr(p, d.Type)
-                p.P(" ")
-                p.P(d.Names[0].Name)
+                switch t := d.Type.(type) {
+                case *ast.ArrayType:
+                        p.Pln("%s %s[%s];", expr(t.Elt), d.Names[0].Name, expr(t.Len))
+                case *ast.StarExpr:
+                        p.Pln("%s* %s;", expr(t.X), d.Names[0].Name)
+                default:
+                        p.Pln("%s %s;", expr(d.Type), d.Names[0].Name)
+                }
         case *ast.ImportSpec:
                 path, _ := strconv.Unquote(d.Path.Value)
                 p.Pln(`#include <%s.h>`, path)
+        case *ast.TypeSpec:
+                switch t := d.Type.(type) {
+                case *ast.Ident:
+                        p.Pln("typedef %s %s;", t.Name, d.Name)
+                case *ast.StructType:
+                        p.Pln("struct %s {", d.Name)
+                        p.Indent()
+                        for _, f := range t.Fields.List {
+                                p.Pln("%s;", field(f))
+                        }
+                        p.Unindent()
+                        p.Pln("};")
+                }
         }
 }
 
@@ -186,6 +242,9 @@ func main() {
         f, err := parser.ParseFile(fset, src, nil, 0)
         if err != nil {
                 log.Fatal(err)
+        }
+        if *printAST {
+                ast.Print(fset, f)
         }
         p := NewPrinter()
         VisitFile(p, f)
