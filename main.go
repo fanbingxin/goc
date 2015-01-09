@@ -58,17 +58,26 @@ func expr(n ast.Expr) string {
         return p.String()
 }
 
+func typ(n ast.Expr) string {
+        p := new(Printer)
+        switch t := n.(type) {
+        case *ast.Ident:
+                p.P(t.Name)
+        case *ast.StarExpr:
+                p.P("%s*", expr(t.X))
+        case *ast.SelectorExpr:
+                p.P("%s.%s", expr(t.X), t.Sel.Name)
+        }
+        return p.String()
+}
+
 func field(n *ast.Field) string {
         p := new(Printer)
         if len(n.Names) == 0 {
                 p.P("%s", expr(n.Type))
                 return p.String()
         }
-        if t, ok := n.Type.(*ast.StarExpr); ok {
-                p.P("%s* %s", expr(t.X), n.Names[0].Name)
-        } else {
-                p.P("%s %s", expr(n.Type), n.Names[0].Name)
-        }
+        p.P("%s %s", typ(n.Type), n.Names[0].Name)
         return p.String()
 }
 
@@ -121,7 +130,11 @@ func VisitStmt(p *Printer, n ast.Stmt) {
         case *ast.DeclStmt:
                 VisitDecl(p, t.Decl)
         case *ast.ReturnStmt:
-                p.Pln("return %s;", expr(t.Results[0]))
+                if len(t.Results) > 0 {
+                        p.Pln("return %s;", expr(t.Results[0]))
+                } else {
+                        p.Pln("return;")
+                }
         case *ast.IncDecStmt:
                 VisitExpr(p, t.X)
                 p.Pln("%s;", t.Tok.String())
@@ -136,20 +149,20 @@ func VisitStmt(p *Printer, n ast.Stmt) {
                                 p.Pi("else if(%s) ", expr(tt.Cond))
                                 VisitBlockStmt(p, tt.Body)
                         case *ast.BlockStmt:
-                                p.Pln("else")
+                                p.Pi("else ")
                                 VisitBlockStmt(p, tt)
                         }
                 }
         case *ast.ForStmt:
                 pp := new(Printer)
                 VisitStmt(pp, t.Init)
-                init := strings.TrimRight(pp.String(), "\n")
+                init := strings.TrimRight(pp.String(), ";\n")
                 pp.Reset()
 
                 VisitStmt(pp, t.Post)
                 post := strings.TrimRight(pp.String(), ";\n")
 
-                p.Pi("for (%s %s; %s) ", init, expr(t.Cond), post)
+                p.Pi("for (%s; %s; %s) ", init, expr(t.Cond), post)
                 VisitBlockStmt(p, t.Body)
         }
 }
@@ -166,13 +179,10 @@ func VisitBlockStmt(p *Printer, n *ast.BlockStmt) {
 
 func VisitFunction(p *Printer, n *ast.FuncDecl) {
         fun := n.Type
-        if fun.Results.NumFields() > 1 {
-                log.Fatal("number of return error")
-        }
         funcname := n.Name.Name
         rettyp := "void"
         if fun.Results.NumFields() > 0 {
-                rettyp = expr(fun.Results.List[0].Type)
+                rettyp = typ(fun.Results.List[0].Type)
         }
 
         params := ""
