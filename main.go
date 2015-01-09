@@ -60,6 +60,10 @@ func expr(n ast.Expr) string {
 
 func field(n *ast.Field) string {
         p := new(Printer)
+        if len(n.Names) == 0 {
+                p.P("%s", expr(n.Type))
+                return p.String()
+        }
         if t, ok := n.Type.(*ast.StarExpr); ok {
                 p.P("%s* %s", expr(t.X), n.Names[0].Name)
         } else {
